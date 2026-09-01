@@ -761,6 +761,49 @@ let DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 22
     };
   }
 
+  // Versión genérica del mismo patrón de responsableLoadFor, para poder agrupar
+  // por cualquier campo (región, obra) sin duplicar la lógica de conteo/orden.
+  function keyedLoadFor(rows, keyFn, limit){
+    function topArr(kf){
+      var counts = groupCount(rows, kf);
+      var arr = Object.keys(counts).map(function(k){return {k:k, total:counts[k]};});
+      arr.sort(function(a,b){return b.total-a.total;});
+      return limit ? arr.slice(0,limit) : arr;
+    }
+    function topArrUnique(kf, uniqueFn){
+      var counts = groupUniqueCount(rows, kf, uniqueFn);
+      var arr = Object.keys(counts).map(function(k){return {k:k, total:counts[k]};});
+      arr.sort(function(a,b){return b.total-a.total;});
+      return limit ? arr.slice(0,limit) : arr;
+    }
+    return {
+      folios: topArrUnique(keyFn, function(r){return r.folio_solicitud;}),
+      requerimientos: topArr(keyFn)
+    };
+  }
+
+  function regionLoadFor(rows, limit){
+    return keyedLoadFor(rows, function(r){return r.region;}, limit);
+  }
+
+  // "Obra" = proyecto, distinguiendo etapa cuando corresponde (mismo criterio que
+  // la tabla de proyectos: dos etapas del mismo proyecto son obras distintas).
+  function obraKeyFor(r){ return r.proyecto+'||'+r.etapa; }
+  function obraLabelFor(key){
+    var meta = projectMeta[key] || {};
+    var parts = key.split('||');
+    var proyecto = meta.proyecto || parts[0];
+    var etapa = meta.etapa != null ? meta.etapa : (parts[1]||'');
+    return proyecto + (etapa && etapa!=='ETAPA 1' ? ' ('+etapa+')' : '');
+  }
+  function obraLoadFor(rows, limit){
+    var load = keyedLoadFor(rows, obraKeyFor, limit);
+    function relabel(arr){
+      return arr.map(function(a){ return {k: obraLabelFor(a.k), total: a.total}; });
+    }
+    return { folios: relabel(load.folios), requerimientos: relabel(load.requerimientos) };
+  }
+
   // =========================================================
   // RENDER: KPIs
   // =========================================================
@@ -833,6 +876,25 @@ let DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 22
     return {
       ingresados: responsableLoadFor(split.ingresados),
       cerrados: responsableLoadFor(split.cerrados),
+    };
+  }
+
+  function regionLoadForWeeklySplit(){
+    var split = weeklyRowsSplit();
+    return {
+      ingresados: regionLoadFor(split.ingresados),
+      cerrados: regionLoadFor(split.cerrados),
+    };
+  }
+
+  // Mini resumen: se limita a las obras con más movimiento en la semana para
+  // que la lista no crezca sin control (puede haber muchas más obras que supervisores/regiones).
+  function obraLoadForWeeklySplit(){
+    var split = weeklyRowsSplit();
+    var limit = 8;
+    return {
+      ingresados: obraLoadFor(split.ingresados, limit),
+      cerrados: obraLoadFor(split.cerrados, limit),
     };
   }
 
@@ -1391,28 +1453,54 @@ let DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 22
     }).join('')+'</div>';
   }
 
-  function prWeeklyResponsableColsHtml(){
-    var load = responsableLoadForWeeklySplit();
+  // Bloque de dos columnas (ingresados/cerrados) reutilizado por supervisor, región y obra
+  // dentro del resumen semanal: cada columna muestra folios (número principal) y
+  // requerimientos (letra menor) por categoría.
+  function prWeeklyTwoColHtml(titleA, foliosA, reqA, titleB, foliosB, reqB){
     function colHtml(title, foliosArr, reqArr){
       if(!foliosArr.length){
         return '<div><div class="pr-mini-title">'+esc(title)+'</div><p class="pr-empty">Sin folios en la ventana.</p></div>';
       }
-      var reqByResp = {}; reqArr.forEach(function(a){ reqByResp[a.k] = a.total; });
+      var reqByKey = {}; reqArr.forEach(function(a){ reqByKey[a.k] = a.total; });
       var max = foliosArr[0].total || 1;
       var rowsHtml = foliosArr.map(function(a,i){
         var pct = max ? (a.total/max*100) : 0;
         return '<div class="bar-row">'+
           '<div class="bname">'+esc(titleCase(a.k))+'</div>'+
           '<div class="bar-track"><div class="bar-fill" style="background:'+CAT_SLOTS[i%CAT_SLOTS.length]+';width:'+pct+'%"></div></div>'+
-          '<div class="bval two-tier"><span class="n-main">'+fmtInt(a.total)+'</span><span class="n-sub">'+fmtInt(reqByResp[a.k]||0)+' req.</span></div>'+
+          '<div class="bval two-tier"><span class="n-main">'+fmtInt(a.total)+'</span><span class="n-sub">'+fmtInt(reqByKey[a.k]||0)+' req.</span></div>'+
         '</div>';
       }).join('');
       return '<div><div class="pr-mini-title">'+esc(title)+'</div><div class="barlist">'+rowsHtml+'</div></div>';
     }
     return '<div class="pr-cols2">'+
-      colHtml('Ingresados por supervisor', load.ingresados.folios, load.ingresados.requerimientos) +
-      colHtml('Cerrados por supervisor', load.cerrados.folios, load.cerrados.requerimientos) +
+      colHtml(titleA, foliosA, reqA) +
+      colHtml(titleB, foliosB, reqB) +
     '</div>';
+  }
+
+  function prWeeklyResponsableColsHtml(){
+    var load = responsableLoadForWeeklySplit();
+    return prWeeklyTwoColHtml(
+      'Ingresados por supervisor', load.ingresados.folios, load.ingresados.requerimientos,
+      'Cerrados por supervisor', load.cerrados.folios, load.cerrados.requerimientos
+    );
+  }
+
+  function prWeeklyRegionColsHtml(){
+    var load = regionLoadForWeeklySplit();
+    return prWeeklyTwoColHtml(
+      'Ingresados por región', load.ingresados.folios, load.ingresados.requerimientos,
+      'Cerrados por región', load.cerrados.folios, load.cerrados.requerimientos
+    );
+  }
+
+  function prWeeklyObraColsHtml(){
+    var load = obraLoadForWeeklySplit();
+    return prWeeklyTwoColHtml(
+      'Ingresados por obra', load.ingresados.folios, load.ingresados.requerimientos,
+      'Cerrados por obra', load.cerrados.folios, load.cerrados.requerimientos
+    );
   }
 
   function renderPrintReportDom(rows, kpis, oldest){
@@ -1446,6 +1534,8 @@ let DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 22
         '<p class="pr-section-sub">'+esc(weeklySubText())+'</p>'+
         prWeeklyKpisHtml() +
         prWeeklyResponsableColsHtml() +
+        prWeeklyRegionColsHtml() +
+        prWeeklyObraColsHtml() +
 
         '<div class="pr-section-title">Distribución por región</div>'+
         '<p class="pr-section-sub">Folios únicos por región (número destacado y barra); requerimientos y casos urgentes activos en letra menor.</p>'+
@@ -1753,13 +1843,27 @@ let DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 22
       var wkKpis = computeWeeklyKpiList();
       if(!wkKpis.length) return;
       var wkGap = 12, wkBoxW = (contentW - wkGap*2)/3, wkBoxH = 62;
-      var load = responsableLoadForWeeklySplit();
-      var cols = [
-        { title:'Ingresados por supervisor', arr: load.ingresados.folios, colorFn:function(i){return PDF_SLOTS_RGB[i%PDF_SLOTS_RGB.length];} },
-        { title:'Cerrados por supervisor', arr: load.cerrados.folios, colorFn:function(i){return PDF_SLOTS_RGB[i%PDF_SLOTS_RGB.length];} }
+      var pdfColorFn = function(i){return PDF_SLOTS_RGB[i%PDF_SLOTS_RGB.length];};
+      var respLoad = responsableLoadForWeeklySplit();
+      var regionLoad = regionLoadForWeeklySplit();
+      var obraLoad = obraLoadForWeeklySplit();
+      var respCols = [
+        { title:'Ingresados por supervisor', arr: respLoad.ingresados.folios, colorFn: pdfColorFn },
+        { title:'Cerrados por supervisor', arr: respLoad.cerrados.folios, colorFn: pdfColorFn }
       ];
-      var neededRows = Math.max.apply(null, cols.map(function(c){return c.arr.length;}).concat([1]));
-      sectionTitle('Resumen semanal', weeklySubText(), wkBoxH + 20 + neededRows*14 + 10);
+      var regionCols = [
+        { title:'Ingresados por región', arr: regionLoad.ingresados.folios, colorFn: pdfColorFn },
+        { title:'Cerrados por región', arr: regionLoad.cerrados.folios, colorFn: pdfColorFn }
+      ];
+      var obraCols = [
+        { title:'Ingresados por obra', arr: obraLoad.ingresados.folios, colorFn: pdfColorFn },
+        { title:'Cerrados por obra', arr: obraLoad.cerrados.folios, colorFn: pdfColorFn }
+      ];
+      function neededRowsFor(cols){ return Math.max.apply(null, cols.map(function(c){return c.arr.length;}).concat([1])); }
+      var groupsExtra = [respCols, regionCols, obraCols].reduce(function(sum, cols){
+        return sum + 18 + neededRowsFor(cols)*14 + 10 + 16;
+      }, 0);
+      sectionTitle('Resumen semanal', weeklySubText(), wkBoxH + 20 + groupsExtra);
       wkKpis.forEach(function(k,i){
         var bx = margin + i*(wkBoxW+wkGap), by = y;
         doc.setDrawColor(205,205,205); doc.setLineWidth(0.75);
@@ -1772,7 +1876,9 @@ let DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 22
         doc.text(truncateToWidth(doc, k.foot, wkBoxW-18), bx+9, by+50);
       });
       y += wkBoxH + 20;
-      drawMiniColumns(cols);
+      drawMiniColumns(respCols);
+      drawMiniColumns(regionCols);
+      drawMiniColumns(obraCols);
     })();
 
     sectionTitle('Distribución por región',
