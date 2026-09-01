@@ -357,6 +357,14 @@
     .bar-row, .pr-kpi, .pr-group-head, .pr-cols2 > div, .pr-table tr{ break-inside: avoid; }
     .pr-section-title, .pr-section-sub{ break-after: avoid; }
     .linechart{ break-inside: avoid; }
+    /* Chrome no imprime colores de fondo (las barras usan background-color) a menos que
+       se fuerce esto: sin esto, las barras salen en blanco si la persona no marca
+       "Gráficos de fondo" en el diálogo de impresión. */
+    *{
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+      color-adjust: exact !important;
+    }
   }
 </style>
 
