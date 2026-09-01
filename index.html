@@ -335,6 +335,17 @@
   .pr-table tr:nth-child(even) td{background:#f7f7f5;}
   .pr-urg-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#d03b3b;margin-right:5px;}
   .pr-empty{font-size:11px;color:#777;font-style:italic;padding:8px 0;}
+  .pr-page .barlist{gap:7px;}
+  .pr-page .bar-row .bname{font-size:10px;}
+  .pr-page .bar-row .bval{font-size:11px;}
+  .pr-page .bar-row .bval .n-main{font-size:13px;}
+  .pr-page .bar-row .bval .n-sub{font-size:9.5px;}
+  .pr-page .bar-track{height:15px;}
+  .pr-page .barlist-wide .bar-row{grid-template-columns:210px 1fr 86px;}
+  .pr-group-head{font-size:9.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#888;margin:14px 0 4px;padding-bottom:3px;border-bottom:1px solid #ddd;}
+  .pr-group-head:first-child{margin-top:0;}
+  .pr-cols2{display:grid;grid-template-columns:1fr 1fr;gap:22px;}
+  .pr-mini-title{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#777;margin-bottom:8px;}
   .pr-foot{margin-top:24px;padding-top:10px;border-top:1px solid #ccc;font-size:9.5px;color:#777;line-height:1.5;}
 
   @media print{
@@ -343,6 +354,9 @@
     .wrap > *:not(#print-report){ display:none !important; }
     #print-report{ display:block !important; }
     .pr-page{ width:100%; }
+    .bar-row, .pr-kpi, .pr-group-head, .pr-cols2 > div, .pr-table tr{ break-inside: avoid; }
+    .pr-section-title, .pr-section-sub{ break-after: avoid; }
+    .linechart{ break-inside: avoid; }
   }
 </style>
 
@@ -631,6 +645,102 @@ const DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 
   }
 
   // =========================================================
+  // SHARED SUMMARY BUILDERS
+  // Usados tanto por el PDF vectorial (jsPDF) como por el informe imprimible
+  // de respaldo (renderPrintReportDom), para que ambos muestren exactamente
+  // los mismos números sin duplicar el cálculo en dos lugares.
+  // =========================================================
+  function regionSummaryFor(rows){
+    var byRegionRows = {};
+    rows.forEach(function(r){ (byRegionRows[r.region] = byRegionRows[r.region]||[]).push(r); });
+    var urgCounts = groupCount(rows.filter(function(r){return r.urgencia==='SI' && r.etapa_pipeline!=='Terminado / Cerrado';}), function(r){return r.region;});
+    var arr = Object.keys(byRegionRows).map(function(k){
+      var rrows = byRegionRows[k];
+      return {
+        region:k,
+        solicitudes: uniqueCount(rrows, function(r){return r.folio_solicitud;}),
+        requerimientos: rrows.length,
+        urg: urgCounts[k]||0
+      };
+    });
+    arr.sort(function(a,b){return b.solicitudes-a.solicitudes;});
+    return arr;
+  }
+
+  function projectSummaryFor(rows){
+    var byProj = {};
+    rows.forEach(function(r){
+      var k = r.proyecto+'||'+r.etapa;
+      byProj[k] = byProj[k] || [];
+      byProj[k].push(r);
+    });
+    var list = Object.keys(byProj).map(function(k){
+      var meta = projectMeta[k] || {};
+      var prows = byProj[k];
+      // "rows" ya viene filtrado a sólo requerimientos activos.
+      var activeDias = prows.map(function(r){return r.dias_espera;}).filter(function(x){return x!=null;});
+      return {
+        proyecto: meta.proyecto || k.split('||')[0],
+        etapa: meta.etapa || '',
+        region: meta.region || prows[0].region,
+        solicitudes: uniqueCount(prows, function(r){return r.folio_solicitud;}),
+        requerimientos: prows.length,
+        dias: activeDias.length ? mean(activeDias) : null
+      };
+    });
+    // Agrupado por región (mismo orden que "Distribución por región") y, dentro de
+    // cada región, por número de folios descendente.
+    var regOrder = regionOrder(rows);
+    var rank = {}; regOrder.forEach(function(r,i){ rank[r]=i; });
+    list.sort(function(a,b){
+      var ra = rank[a.region]!=null ? rank[a.region] : 999, rb = rank[b.region]!=null ? rank[b.region] : 999;
+      return ra-rb || b.solicitudes-a.solicitudes || b.requerimientos-a.requerimientos;
+    });
+    return list;
+  }
+
+  function monthlyTrendFor(rows){
+    var reqCounts = {}, solSets = {};
+    rows.forEach(function(r){
+      if(!r.fecha_solicitud) return;
+      var m = r.fecha_solicitud.slice(0,7);
+      reqCounts[m] = (reqCounts[m]||0)+1;
+      solSets[m] = solSets[m] || {};
+      solSets[m][r.folio_solicitud] = true;
+    });
+    var months = Object.keys(reqCounts).sort();
+    var solCounts = {}; months.forEach(function(m){ solCounts[m] = Object.keys(solSets[m]).length; });
+    return { months: months, solCounts: solCounts, reqCounts: reqCounts };
+  }
+
+  function topItemsFor(rows, limit){
+    var counts = groupCount(rows, function(r){return r.item;});
+    var arr = Object.keys(counts).map(function(k){return {k:k, total:counts[k]};});
+    arr.sort(function(a,b){return b.total-a.total;});
+    return limit ? arr.slice(0,limit) : arr;
+  }
+
+  function responsableLoadFor(rows, limit){
+    function topArr(keyFn){
+      var counts = groupCount(rows, keyFn);
+      var arr = Object.keys(counts).map(function(k){return {k:k, total:counts[k]};});
+      arr.sort(function(a,b){return b.total-a.total;});
+      return limit ? arr.slice(0,limit) : arr;
+    }
+    function topArrUnique(keyFn, uniqueFn){
+      var counts = groupUniqueCount(rows, keyFn, uniqueFn);
+      var arr = Object.keys(counts).map(function(k){return {k:k, total:counts[k]};});
+      arr.sort(function(a,b){return b.total-a.total;});
+      return limit ? arr.slice(0,limit) : arr;
+    }
+    var respFn = function(r){return r.responsable.replace(' - PV','');};
+    return {
+      folios: topArrUnique(respFn, function(r){return r.folio_solicitud;}),
+      requerimientos: topArr(respFn)
+    };
+  }
+
+  // =========================================================
   // RENDER: KPIs
   // =========================================================
   function computeKpiList(rows){
@@ -895,24 +1005,16 @@ const DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 
   // =========================================================
   // RENDER: monthly trend line chart (svg)
   // =========================================================
-  function renderLineChart(rows){
-    var reqCounts = {};
-    var solSets = {};
-    rows.forEach(function(r){
-      if(!r.fecha_solicitud) return;
-      var m = r.fecha_solicitud.slice(0,7);
-      reqCounts[m] = (reqCounts[m]||0)+1;
-      solSets[m] = solSets[m] || new Set();
-      solSets[m].add(r.folio_solicitud);
-    });
-    var months = Object.keys(reqCounts).sort();
-    var solCounts = {}; months.forEach(function(m){ solCounts[m] = solSets[m].size; });
-    var svg = document.getElementById('chart-line');
-    var W=460, H=180, padL=30, padR=14, padT=16, padB=26;
+  // Construye el markup interno (<line>/<path>/<circle>/<text>) del gráfico de
+  // tendencia mensual a partir de {months, solCounts, reqCounts} (ver monthlyTrendFor).
+  // Se usa tanto para el SVG en pantalla (#chart-line) como para el del informe imprimible.
+  function buildTrendChartSvgInner(trend, W, H){
+    W = W||460; H = H||180;
+    var padL=30, padR=14, padT=16, padB=26;
     var plotW = W-padL-padR, plotH = H-padT-padB;
+    var months = trend.months, reqCounts = trend.reqCounts, solCounts = trend.solCounts;
     if(!months.length){
-      svg.innerHTML = '<text x="'+(W/2)+'" y="'+(H/2)+'" text-anchor="middle" class="axis-lbl">Sin datos</text>';
-      return;
+      return '<text x="'+(W/2)+'" y="'+(H/2)+'" text-anchor="middle" class="axis-lbl">Sin datos</text>';
     }
     var max = Math.max.apply(null, months.map(function(m){return reqCounts[m];}));
     max = Math.ceil(max/10)*10 || 10;
@@ -948,9 +1050,14 @@ const DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 
       return '<circle class="lc-dot" cx="'+p.x+'" cy="'+p.ySol+'" r="'+(isLast?4.5:3.2)+'"/>'+
         (isLast || p.vSol===max ? '<text class="lc-dot-label" x="'+p.x+'" y="'+(p.ySol-10)+'" text-anchor="middle">'+p.vSol+'</text>' : '');
     }).join('');
-    svg.innerHTML = gridLines + '<path class="lc-area" d="'+areaPath+'"/>'+
+    return gridLines + '<path class="lc-area" d="'+areaPath+'"/>'+
       '<path class="lc-line-secondary" d="'+reqPath+'"/>' + reqDots +
       '<path class="lc-line" d="'+solPath+'"/>' + solDots + xlabels;
+  }
+
+  function renderLineChart(rows){
+    var svg = document.getElementById('chart-line');
+    svg.innerHTML = buildTrendChartSvgInner(monthlyTrendFor(rows));
   }
 
   // =========================================================
@@ -1086,7 +1193,93 @@ const DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 
     }).join('');
   }
 
-  function renderPrintReportDom(kpis, oldest){
+  // ---- secciones del informe imprimible: mismos datos y cálculos que el PDF vectorial ----
+  function prRegionRowsHtml(rows){
+    var arr = regionSummaryFor(rows);
+    if(!arr.length) return '<p class="pr-empty">Sin datos para este filtro.</p>';
+    var max = arr[0].solicitudes || 1;
+    var rowsHtml = arr.map(function(a,i){
+      var pct = max ? (a.solicitudes/max*100) : 0;
+      return '<div class="bar-row'+(i===0?' emph':'')+'">'+
+        '<div class="bname">'+esc(titleCase(a.region))+'</div>'+
+        '<div class="bar-track"><div class="bar-fill" style="width:'+pct+'%"></div></div>'+
+        '<div class="bval two-tier"><span class="n-main">'+fmtInt(a.solicitudes)+'</span>'+
+          '<span class="n-sub">'+fmtInt(a.requerimientos)+' req.'+(a.urg?' <span class="urg">· '+a.urg+'u</span>':'')+'</span></div>'+
+      '</div>';
+    }).join('');
+    return '<div class="barlist barlist-wide" id="pr-chart-region">'+rowsHtml+'</div>';
+  }
+
+  function prTrendHtml(rows){
+    var trend = monthlyTrendFor(rows);
+    if(!trend.months.length) return '<p class="pr-empty">Sin datos de tendencia mensual para este filtro.</p>';
+    var inner = buildTrendChartSvgInner(trend);
+    return '<svg class="linechart" viewBox="0 0 460 180" preserveAspectRatio="none">'+inner+'</svg>'+
+      '<div class="legend"><span class="lk"><span class="sw" style="background:var(--accent)"></span>Folios</span>'+
+      '<span class="lk"><span class="sw" style="background:var(--text-muted)"></span>Requerimientos</span></div>';
+  }
+
+  function prProjectRowsHtml(rows){
+    var arr = projectSummaryFor(rows);
+    if(!arr.length) return '<p class="pr-empty">Sin proyectos para este filtro.</p>';
+    var max = Math.max.apply(null, arr.map(function(a){return a.solicitudes;}).concat([1]));
+    var lastRegion = null, html = '';
+    arr.forEach(function(a){
+      if(a.region !== lastRegion){
+        lastRegion = a.region;
+        html += '<div class="pr-group-head">'+esc(titleCase(a.region))+'</div>';
+      }
+      var pct = max ? (a.solicitudes/max*100) : 0;
+      var label = titleCase(a.proyecto) + (a.etapa && a.etapa!=='ETAPA 1' ? ' ('+a.etapa+')' : '');
+      var sub = fmtInt(a.requerimientos)+' req.'+(a.dias!=null ? ' · '+fmtInt(a.dias)+'d prom.' : '');
+      html += '<div class="bar-row">'+
+        '<div class="bname">'+esc(label)+'</div>'+
+        '<div class="bar-track"><div class="bar-fill" style="width:'+pct+'%"></div></div>'+
+        '<div class="bval two-tier"><span class="n-main">'+fmtInt(a.solicitudes)+'</span><span class="n-sub">'+sub+'</span></div>'+
+      '</div>';
+    });
+    return '<div class="barlist barlist-wide" id="pr-chart-proj">'+html+'</div>';
+  }
+
+  function prItemsRowsHtml(rows){
+    var arr = topItemsFor(rows, 10);
+    if(!arr.length) return '<p class="pr-empty">Sin datos para este filtro.</p>';
+    var max = arr[0].total || 1;
+    var rowsHtml = arr.map(function(a){
+      var pct = max ? (a.total/max*100) : 0;
+      return '<div class="bar-row">'+
+        '<div class="bname">'+esc(titleCase(a.k))+'</div>'+
+        '<div class="bar-track"><div class="bar-fill" style="background:var(--accent);width:'+pct+'%"></div></div>'+
+        '<div class="bval">'+fmtInt(a.total)+'</div>'+
+      '</div>';
+    }).join('');
+    return '<div class="barlist">'+rowsHtml+'</div>';
+  }
+
+  function prResponsableColsHtml(rows){
+    var load = responsableLoadFor(rows);
+    function colHtml(title, arr){
+      if(!arr.length){
+        return '<div><div class="pr-mini-title">'+esc(title)+'</div><p class="pr-empty">Sin datos.</p></div>';
+      }
+      var max = arr[0].total || 1;
+      var rowsHtml = arr.map(function(a,i){
+        var pct = max ? (a.total/max*100) : 0;
+        return '<div class="bar-row">'+
+          '<div class="bname">'+esc(titleCase(a.k))+'</div>'+
+          '<div class="bar-track"><div class="bar-fill" style="background:'+CAT_SLOTS[i%CAT_SLOTS.length]+';width:'+pct+'%"></div></div>'+
+          '<div class="bval">'+fmtInt(a.total)+'</div>'+
+        '</div>';
+      }).join('');
+      return '<div><div class="pr-mini-title">'+esc(title)+'</div><div class="barlist">'+rowsHtml+'</div></div>';
+    }
+    return '<div class="pr-cols2">'+
+      colHtml('Carga por responsable (folios)', load.folios) +
+      colHtml('Carga por responsable (requerimientos)', load.requerimientos) +
+    '</div>';
+  }
+
+  function renderPrintReportDom(rows, kpis, oldest){
     var container = document.getElementById('print-report');
     if(!container) return;
 
@@ -1112,6 +1305,26 @@ const DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 
         '</div>'+
 
         '<div class="pr-kpis">'+kpisHtml+'</div>'+
+
+        '<div class="pr-section-title">Distribución por región</div>'+
+        '<p class="pr-section-sub">Folios únicos por región (número destacado y barra); requerimientos y casos urgentes activos en letra menor.</p>'+
+        prRegionRowsHtml(rows) +
+
+        '<div class="pr-section-title">Tendencia mensual</div>'+
+        '<p class="pr-section-sub">Folios nuevos (línea de acento, con etiquetas) y requerimientos ingresados (línea gris) por mes del folio.</p>'+
+        prTrendHtml(rows) +
+
+        '<div class="pr-section-title">Folios por obra</div>'+
+        '<p class="pr-section-sub">Agrupado por región (mismo orden que "Distribución por región"); dentro de cada región, por número de folios. Requerimientos y espera promedio* en letra menor. *Sólo requerimientos activos.</p>'+
+        prProjectRowsHtml(rows) +
+
+        '<div class="pr-section-title">Principales ítems de falla</div>'+
+        '<p class="pr-section-sub">Top de ítems reportados en los requerimientos del filtro actual (todas las etapas).</p>'+
+        prItemsRowsHtml(rows) +
+
+        '<div class="pr-section-title">Carga por responsable</div>'+
+        '<p class="pr-section-sub">Folios únicos y requerimientos del filtro actual, por responsable PV.</p>'+
+        prResponsableColsHtml(rows) +
 
         '<div class="pr-section-title">Top 10 folios activos con mayor antigüedad</div>'+
         '<p class="pr-section-sub">Ordenados por días de espera desde la fecha del folio. Sólo requerimientos activos (excluye lo ya terminado).</p>'+
@@ -1210,23 +1423,7 @@ const DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 
     }
 
     // ---- Distribución por región (folios destacados, igual que en el panel) ----
-    function regionSummary(){
-      var byRegionRows = {};
-      rows.forEach(function(r){ (byRegionRows[r.region] = byRegionRows[r.region]||[]).push(r); });
-      var urgCounts = groupCount(rows.filter(function(r){return r.urgencia==='SI' && r.etapa_pipeline!=='Terminado / Cerrado';}), function(r){return r.region;});
-      var arr = Object.keys(byRegionRows).map(function(k){
-        var rrows = byRegionRows[k];
-        return {
-          region:k,
-          solicitudes: uniqueCount(rrows, function(r){return r.folio_solicitud;}),
-          requerimientos: rrows.length,
-          urg: urgCounts[k]||0
-        };
-      });
-      arr.sort(function(a,b){return b.solicitudes-a.solicitudes;});
-      return arr;
-    }
-
+    // (cálculo compartido con el informe imprimible: ver regionSummaryFor)
     function drawRegionRows(arr){
       // Más compacto que antes, con una línea divisoria muy sutil entre regiones
       // (mismo tratamiento que el gráfico "Etapa del proceso por región" en pantalla).
@@ -1319,22 +1516,14 @@ const DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 
 
     // ---- tendencia mensual: mismo cálculo que el gráfico de líneas en pantalla ----
     function drawTrendChart(){
-      var reqCounts = {}, solSets = {};
-      rows.forEach(function(r){
-        if(!r.fecha_solicitud) return;
-        var m = r.fecha_solicitud.slice(0,7);
-        reqCounts[m] = (reqCounts[m]||0)+1;
-        solSets[m] = solSets[m] || {};
-        solSets[m][r.folio_solicitud] = true;
-      });
-      var months = Object.keys(reqCounts).sort();
+      var trend = monthlyTrendFor(rows);
+      var months = trend.months, reqCounts = trend.reqCounts, solCounts = trend.solCounts;
       if(!months.length){
         ensureSpace(20);
         doc.setFont('helvetica','italic'); doc.setFontSize(8.5); doc.setTextColor(120,120,120);
         doc.text('Sin datos de tendencia mensual para este filtro.', margin, y); y += 18;
         return;
       }
-      var solCounts = {}; months.forEach(function(m){ solCounts[m] = Object.keys(solSets[m]).length; });
       var chartH = TREND_CHART_H;
       ensureSpace(chartH + 42);
       var padX = 6;
@@ -1382,39 +1571,7 @@ const DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 
       y += 18;
     }
 
-    // ---- Folios por obra (mismo cálculo que la tabla de proyectos en pantalla) ----
-    function projectSummary(){
-      var byProj = {};
-      rows.forEach(function(r){
-        var k = r.proyecto+'||'+r.etapa;
-        byProj[k] = byProj[k] || [];
-        byProj[k].push(r);
-      });
-      var list = Object.keys(byProj).map(function(k){
-        var meta = projectMeta[k] || {};
-        var prows = byProj[k];
-        // "rows" ya viene filtrado a sólo requerimientos activos.
-        var activeDias = prows.map(function(r){return r.dias_espera;}).filter(function(x){return x!=null;});
-        return {
-          proyecto: meta.proyecto || k.split('||')[0],
-          etapa: meta.etapa || '',
-          region: meta.region || prows[0].region,
-          solicitudes: uniqueCount(prows, function(r){return r.folio_solicitud;}),
-          requerimientos: prows.length,
-          dias: activeDias.length ? mean(activeDias) : null
-        };
-      });
-      // Agrupado por región (mismo orden que "Distribución por región") y, dentro de
-      // cada región, por número de folios descendente.
-      var regOrder = regionOrder(rows);
-      var rank = {}; regOrder.forEach(function(r,i){ rank[r]=i; });
-      list.sort(function(a,b){
-        var ra = rank[a.region]!=null ? rank[a.region] : 999, rb = rank[b.region]!=null ? rank[b.region] : 999;
-        return ra-rb || b.solicitudes-a.solicitudes || b.requerimientos-a.requerimientos;
-      });
-      return list;
-    }
-
+    // ---- Folios por obra (cálculo compartido con el informe imprimible: ver projectSummaryFor) ----
     function drawProjectRows(arr){
       var rowH = 26, labelW = 168, numW = 108, gapW = 12;
       var barW = contentW - labelW - numW - gapW;
@@ -1454,7 +1611,7 @@ const DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 
     sectionTitle('Distribución por región',
       'Folios únicos por región (número destacado y barra); requerimientos y casos urgentes activos en letra menor.',
       36);
-    drawRegionRows(regionSummary());
+    drawRegionRows(regionSummaryFor(rows));
 
     sectionTitle('Tendencia mensual',
       'Folios nuevos (línea de acento, con etiquetas) y requerimientos ingresados (línea gris) por mes del folio.',
@@ -1465,7 +1622,7 @@ const DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 
       'Agrupado por región (mismo orden que "Distribución por región"); dentro de cada región, por número de folios. Requerimientos y espera promedio* en letra menor. *Sólo requerimientos activos.',
       50);
     (function(){
-      var arr = projectSummary();
+      var arr = projectSummaryFor(rows);
       if(arr.length){
         drawProjectRows(arr);
       } else {
@@ -1475,10 +1632,7 @@ const DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 
     })();
 
     (function(){
-      var counts = groupCount(rows, function(r){return r.item;});
-      var arr = Object.keys(counts).map(function(k){return {item:k, total:counts[k]};});
-      arr.sort(function(a,b){return b.total-a.total;});
-      arr = arr.slice(0,10);
+      var arr = topItemsFor(rows, 10).map(function(a){return {item:a.k, total:a.total};});
       var listH = arr.length ? (arr.length*18 + 12) : 18;
       sectionTitle('Principales ítems de falla',
         'Top de ítems reportados en los requerimientos del filtro actual (todas las etapas).',
@@ -1492,21 +1646,10 @@ const DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 
     })();
 
     (function(){
-      function topArr(keyFn, limit){
-        var counts = groupCount(rows, keyFn);
-        var arr = Object.keys(counts).map(function(k){return {k:k, total:counts[k]};});
-        arr.sort(function(a,b){return b.total-a.total;});
-        return limit ? arr.slice(0,limit) : arr;
-      }
-      function topArrUnique(keyFn, uniqueFn, limit){
-        var counts = groupUniqueCount(rows, keyFn, uniqueFn);
-        var arr = Object.keys(counts).map(function(k){return {k:k, total:counts[k]};});
-        arr.sort(function(a,b){return b.total-a.total;});
-        return limit ? arr.slice(0,limit) : arr;
-      }
+      var load = responsableLoadFor(rows);
       var cols = [
-        { title:'Carga por responsable (folios)', arr: topArrUnique(function(r){return r.responsable.replace(' - PV','');}, function(r){return r.folio_solicitud;}), colorFn:function(i){return PDF_SLOTS_RGB[i%PDF_SLOTS_RGB.length];} },
-        { title:'Carga por responsable (requerimientos)', arr: topArr(function(r){return r.responsable.replace(' - PV','');}), colorFn:function(i){return PDF_SLOTS_RGB[i%PDF_SLOTS_RGB.length];} }
+        { title:'Carga por responsable (folios)', arr: load.folios, colorFn:function(i){return PDF_SLOTS_RGB[i%PDF_SLOTS_RGB.length];} },
+        { title:'Carga por responsable (requerimientos)', arr: load.requerimientos, colorFn:function(i){return PDF_SLOTS_RGB[i%PDF_SLOTS_RGB.length];} }
       ];
       var neededRows = Math.max.apply(null, cols.map(function(c){return c.arr.length;}).concat([1]));
       sectionTitle('Carga por responsable',
@@ -1605,7 +1748,7 @@ const DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 
     setPdfStatus('Generando informe…');
 
     function fallbackToPrint(msg){
-      renderPrintReportDom(kpis, oldest);
+      renderPrintReportDom(rows, kpis, oldest);
       try{ window.print(); }catch(e){}
       setPdfStatus(msg || 'Se abrió la vista de impresión: elige "Guardar como PDF".');
       if(btn) btn.disabled = false;
