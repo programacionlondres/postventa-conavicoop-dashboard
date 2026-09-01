@@ -1530,13 +1530,6 @@ let DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 22
 
         '<div class="pr-kpis">'+kpisHtml+'</div>'+
 
-        '<div class="pr-section-title">Resumen semanal</div>'+
-        '<p class="pr-section-sub">'+esc(weeklySubText())+'</p>'+
-        prWeeklyKpisHtml() +
-        prWeeklyResponsableColsHtml() +
-        prWeeklyRegionColsHtml() +
-        prWeeklyObraColsHtml() +
-
         '<div class="pr-section-title">Distribución por región</div>'+
         '<p class="pr-section-sub">Folios únicos por región (número destacado y barra); requerimientos y casos urgentes activos en letra menor.</p>'+
         prRegionRowsHtml(rows) +
@@ -1562,6 +1555,13 @@ let DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 22
         (oldest.length
           ? '<table class="pr-table"><thead><tr><th>#</th><th>Folio</th><th>Proyecto</th><th>Región / Comuna</th><th>Fecha folio</th><th class="num">Días</th><th class="num">Requer.</th><th>Etapa</th></tr></thead><tbody>'+pdfRowsOldest(oldest)+'</tbody></table>'
           : '<p class="pr-empty">No hay folios activos en el filtro seleccionado.</p>') +
+
+        '<div class="pr-section-title">Resumen semanal</div>'+
+        '<p class="pr-section-sub">'+esc(weeklySubText())+'</p>'+
+        prWeeklyKpisHtml() +
+        prWeeklyResponsableColsHtml() +
+        prWeeklyRegionColsHtml() +
+        prWeeklyObraColsHtml() +
 
         '<div class="pr-foot">Fuente: Reporte Operacional 1 (hoja "Detalle 1") y planilla de Programas en garantía (hoja "BASE"), corte al '+esc(DATA.kpis.fecha_corte)+'. Incluye sólo requerimientos activos (se excluyen los terminados/cerrados). No incluye datos de contacto del propietario (nombre, RUT, teléfono, correo) por resguardo de privacidad.</div>'+
       '</div>';
@@ -1839,48 +1839,6 @@ let DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 22
       y += 12;
     }
 
-    (function(){
-      var wkKpis = computeWeeklyKpiList();
-      if(!wkKpis.length) return;
-      var wkGap = 12, wkBoxW = (contentW - wkGap*2)/3, wkBoxH = 62;
-      var pdfColorFn = function(i){return PDF_SLOTS_RGB[i%PDF_SLOTS_RGB.length];};
-      var respLoad = responsableLoadForWeeklySplit();
-      var regionLoad = regionLoadForWeeklySplit();
-      var obraLoad = obraLoadForWeeklySplit();
-      var respCols = [
-        { title:'Ingresados por supervisor', arr: respLoad.ingresados.folios, colorFn: pdfColorFn },
-        { title:'Cerrados por supervisor', arr: respLoad.cerrados.folios, colorFn: pdfColorFn }
-      ];
-      var regionCols = [
-        { title:'Ingresados por región', arr: regionLoad.ingresados.folios, colorFn: pdfColorFn },
-        { title:'Cerrados por región', arr: regionLoad.cerrados.folios, colorFn: pdfColorFn }
-      ];
-      var obraCols = [
-        { title:'Ingresados por obra', arr: obraLoad.ingresados.folios, colorFn: pdfColorFn },
-        { title:'Cerrados por obra', arr: obraLoad.cerrados.folios, colorFn: pdfColorFn }
-      ];
-      function neededRowsFor(cols){ return Math.max.apply(null, cols.map(function(c){return c.arr.length;}).concat([1])); }
-      var groupsExtra = [respCols, regionCols, obraCols].reduce(function(sum, cols){
-        return sum + 18 + neededRowsFor(cols)*14 + 10 + 16;
-      }, 0);
-      sectionTitle('Resumen semanal', weeklySubText(), wkBoxH + 20 + groupsExtra);
-      wkKpis.forEach(function(k,i){
-        var bx = margin + i*(wkBoxW+wkGap), by = y;
-        doc.setDrawColor(205,205,205); doc.setLineWidth(0.75);
-        doc.roundedRect(bx, by, wkBoxW, wkBoxH, 4, 4);
-        doc.setFont('helvetica','bold'); doc.setFontSize(7.2); doc.setTextColor(110,110,110);
-        doc.text(k.label.toUpperCase(), bx+9, by+14);
-        doc.setFont('helvetica','bold'); doc.setFontSize(14.5); doc.setTextColor(17,17,17);
-        doc.text(truncateToWidth(doc, k.value, wkBoxW-18), bx+9, by+36);
-        doc.setFont('helvetica','normal'); doc.setFontSize(7.3); doc.setTextColor(120,120,120);
-        doc.text(truncateToWidth(doc, k.foot, wkBoxW-18), bx+9, by+50);
-      });
-      y += wkBoxH + 20;
-      drawMiniColumns(respCols);
-      drawMiniColumns(regionCols);
-      drawMiniColumns(obraCols);
-    })();
-
     sectionTitle('Distribución por región',
       'Folios únicos por región (número destacado y barra); requerimientos y casos urgentes activos en letra menor.',
       36);
@@ -1992,6 +1950,48 @@ let DATA = {"kpis": {"total_requerimientos": 484, "total_solicitudes_unicas": 22
       doc.setFont('helvetica','italic'); doc.setFontSize(8.5); doc.setTextColor(120,120,120);
       doc.text('No hay folios activos en el filtro seleccionado.', margin, y); y += 20;
     }
+
+    (function(){
+      var wkKpis = computeWeeklyKpiList();
+      if(!wkKpis.length) return;
+      var wkGap = 12, wkBoxW = (contentW - wkGap*2)/3, wkBoxH = 62;
+      var pdfColorFn = function(i){return PDF_SLOTS_RGB[i%PDF_SLOTS_RGB.length];};
+      var respLoad = responsableLoadForWeeklySplit();
+      var regionLoad = regionLoadForWeeklySplit();
+      var obraLoad = obraLoadForWeeklySplit();
+      var respCols = [
+        { title:'Ingresados por supervisor', arr: respLoad.ingresados.folios, colorFn: pdfColorFn },
+        { title:'Cerrados por supervisor', arr: respLoad.cerrados.folios, colorFn: pdfColorFn }
+      ];
+      var regionCols = [
+        { title:'Ingresados por región', arr: regionLoad.ingresados.folios, colorFn: pdfColorFn },
+        { title:'Cerrados por región', arr: regionLoad.cerrados.folios, colorFn: pdfColorFn }
+      ];
+      var obraCols = [
+        { title:'Ingresados por obra', arr: obraLoad.ingresados.folios, colorFn: pdfColorFn },
+        { title:'Cerrados por obra', arr: obraLoad.cerrados.folios, colorFn: pdfColorFn }
+      ];
+      function neededRowsFor(cols){ return Math.max.apply(null, cols.map(function(c){return c.arr.length;}).concat([1])); }
+      var groupsExtra = [respCols, regionCols, obraCols].reduce(function(sum, cols){
+        return sum + 18 + neededRowsFor(cols)*14 + 10 + 16;
+      }, 0);
+      sectionTitle('Resumen semanal', weeklySubText(), wkBoxH + 20 + groupsExtra);
+      wkKpis.forEach(function(k,i){
+        var bx = margin + i*(wkBoxW+wkGap), by = y;
+        doc.setDrawColor(205,205,205); doc.setLineWidth(0.75);
+        doc.roundedRect(bx, by, wkBoxW, wkBoxH, 4, 4);
+        doc.setFont('helvetica','bold'); doc.setFontSize(7.2); doc.setTextColor(110,110,110);
+        doc.text(k.label.toUpperCase(), bx+9, by+14);
+        doc.setFont('helvetica','bold'); doc.setFontSize(14.5); doc.setTextColor(17,17,17);
+        doc.text(truncateToWidth(doc, k.value, wkBoxW-18), bx+9, by+36);
+        doc.setFont('helvetica','normal'); doc.setFontSize(7.3); doc.setTextColor(120,120,120);
+        doc.text(truncateToWidth(doc, k.foot, wkBoxW-18), bx+9, by+50);
+      });
+      y += wkBoxH + 20;
+      drawMiniColumns(respCols);
+      drawMiniColumns(regionCols);
+      drawMiniColumns(obraCols);
+    })();
 
     ensureSpace(26);
     doc.setDrawColor(210,210,210); doc.setLineWidth(0.6);
