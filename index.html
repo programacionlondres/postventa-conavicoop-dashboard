@@ -1885,14 +1885,9 @@ let DATA = /*DATA_START*/{"kpis": {"total_requerimientos": 484, "total_solicitud
 (function(){
   "use strict";
 
-  var GH_OWNER = 'programacionlondres';
-  var GH_REPO = 'postventa-conavicoop-dashboard';
-  var GH_BRANCH = 'main';
-  var GH_FILE_PATH = 'index.html';
-  var LS_TOKEN_KEY = 'postventa_gh_token';
-
-  var DATA_START_MARKER = '/*DATA_START*/';
-  var DATA_END_MARKER = '/*DATA_END*/';
+  // El Worker guarda el token de GitHub de forma segura (nunca pasa por
+  // este navegador) y hace la publicación por nosotros.
+  var WORKER_URL = 'https://postventa-publish.programacion-londres.workers.dev';
 
   // Mapeo exacto Status -> etapa del pipeline (idéntico a build_data.py).
   var STATUS_TO_PIPELINE = {
@@ -1973,22 +1968,6 @@ let DATA = /*DATA_START*/{"kpis": {"total_requerimientos": 484, "total_solicitud
     keysB.forEach(function(t){unionKeys[t]=1;});
     var unionSize = Object.keys(unionKeys).length;
     return unionSize ? inter/unionSize : 0;
-  }
-
-  function utf8ToBase64(str){
-    var bytes = new TextEncoder().encode(str);
-    var binary = '';
-    var chunk = 0x8000;
-    for(var i=0;i<bytes.length;i+=chunk){
-      binary += String.fromCharCode.apply(null, bytes.subarray(i, i+chunk));
-    }
-    return btoa(binary);
-  }
-  function base64ToUtf8(b64){
-    var binary = atob(String(b64).replace(/\n/g,''));
-    var bytes = new Uint8Array(binary.length);
-    for(var i=0;i<binary.length;i++){ bytes[i] = binary.charCodeAt(i); }
-    return new TextDecoder('utf-8').decode(bytes);
   }
 
   // ---------------------------------------------------------
@@ -2280,68 +2259,27 @@ let DATA = /*DATA_START*/{"kpis": {"total_requerimientos": 484, "total_solicitud
   }
 
   // ---------------------------------------------------------
-  // Publicación en GitHub (Contents API)
+  // Publicación: se envía el dataset ya calculado a un Worker que
+  // guarda el token de GitHub de forma segura y hace el commit por
+  // nosotros. Ningún token pasa nunca por este navegador.
   // ---------------------------------------------------------
-  function ghHeaders(token){
-    return {
-      'Authorization': 'token ' + token,
-      'Accept': 'application/vnd.github+json',
-    };
-  }
-
-  function fetchCurrentIndexHtml(token){
-    var url = 'https://api.github.com/repos/'+GH_OWNER+'/'+GH_REPO+'/contents/'+GH_FILE_PATH+'?ref='+GH_BRANCH;
-    return fetch(url, {headers: ghHeaders(token)}).then(function(resp){
-      if(!resp.ok){
-        return resp.json().catch(function(){return {};}).then(function(body){
-          throw new Error('No se pudo leer el archivo publicado en GitHub (HTTP '+resp.status+'). ' + (body && body.message ? body.message : ''));
-        });
-      }
-      return resp.json();
-    }).then(function(json){
-      return { sha: json.sha, html: base64ToUtf8(json.content) };
-    });
-  }
-
-  function spliceData(html, newJsonText){
-    var s = html.indexOf(DATA_START_MARKER);
-    var e = html.indexOf(DATA_END_MARKER);
-    if(s<0 || e<0 || e<s){
-      throw new Error('No se encontraron los marcadores de datos en el archivo publicado. No es seguro actualizar automáticamente; contacta al desarrollador.');
-    }
-    var before = html.slice(0, s+DATA_START_MARKER.length);
-    var after = html.slice(e);
-    return before + newJsonText + after;
-  }
-
-  function publishToGithub(token, newData){
-    var newJsonText = JSON.stringify(newData);
-    return fetchCurrentIndexHtml(token).then(function(current){
-      var newHtml = spliceData(current.html, newJsonText);
-      var url = 'https://api.github.com/repos/'+GH_OWNER+'/'+GH_REPO+'/contents/'+GH_FILE_PATH;
-      var body = {
-        message: 'Actualización de datos Postventa — ' + new Date().toISOString().slice(0,10),
-        content: utf8ToBase64(newHtml),
-        sha: current.sha,
-        branch: GH_BRANCH,
-      };
-      return fetch(url, {
-        method: 'PUT',
-        headers: Object.assign({'Content-Type':'application/json'}, ghHeaders(token)),
-        body: JSON.stringify(body),
-      }).then(function(resp){
+  function publishViaWorker(newData){
+    return fetch(WORKER_URL, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({data: newData}),
+    }).then(function(resp){
+      return resp.json().catch(function(){ return {}; }).then(function(json){
         if(!resp.ok){
-          return resp.json().catch(function(){return {};}).then(function(errBody){
-            var code = resp.status;
-            var msg = errBody && errBody.message ? errBody.message : '';
-            if(code === 401) throw new Error('El token de GitHub no es válido o expiró.');
-            if(code === 403) throw new Error('El token no tiene permiso para escribir en este repositorio (revisa el alcance/scope). ' + msg);
-            if(code === 409) throw new Error('Alguien más publicó un cambio justo ahora. Vuelve a intentarlo.');
-            throw new Error('GitHub respondió con un error (HTTP '+code+'). ' + msg);
-          });
+          throw new Error((json && json.error) ? json.error : ('No se pudo publicar (HTTP '+resp.status+').'));
         }
-        return resp.json();
+        return json;
       });
+    }).catch(function(err){
+      if(err instanceof TypeError){
+        throw new Error('No se pudo conectar con el servicio de publicación. Revisa tu conexión a internet e inténtalo de nuevo.');
+      }
+      throw err;
     });
   }
 
@@ -2422,8 +2360,6 @@ let DATA = /*DATA_START*/{"kpis": {"total_requerimientos": 484, "total_solicitud
   }
 
   function renderStepUpload(){
-    var savedToken = '';
-    try{ savedToken = localStorage.getItem(LS_TOKEN_KEY) || ''; }catch(e){}
     var html = panelShell(
       'Actualizar datos del dashboard',
       'Sube el archivo RO1 más reciente. Si aparece algún proyecto nuevo que no está en el dashboard, también puedes subir la planilla de garantías para ayudar a identificarlo.',
@@ -2434,17 +2370,6 @@ let DATA = /*DATA_START*/{"kpis": {"total_requerimientos": 484, "total_solicitud
       '<div class="upd-step-label">2. Planilla de garantías (opcional — sólo si hay proyectos nuevos)</div>'+
       '<div class="upd-drop" id="upd-drop-gar" tabindex="0">Arrastra aquí la planilla de <b>garantías (constructora)</b>, o haz clic para elegirla<div class="upd-fname" id="upd-fname-gar"></div></div>'+
       '<input type="file" id="upd-file-gar" accept=".xls,.xlsx" style="display:none;">'+
-
-      '<div class="upd-step-label">3. Token de GitHub (para publicar)</div>'+
-      '<div class="upd-field">'+
-      '<label for="upd-token">Personal Access Token (fine-grained, sólo repo postventa-conavicoop-dashboard, permiso Contents: Read and write)</label>'+
-      '<input type="password" id="upd-token" placeholder="ghp_..." value="'+esc(savedToken)+'">'+
-      '<div class="upd-help">El token se guarda sólo en este navegador (nunca se publica ni se envía a nadie más que a GitHub). '+
-      '<a href="#" id="upd-token-help" style="color:var(--accent);">¿Cómo creo uno?</a></div>'+
-      '<div id="upd-token-help-box" style="display:none;margin-top:8px;font-size:11.5px;color:var(--text-secondary);line-height:1.5;background:var(--accent-wash);border-radius:8px;padding:10px 12px;">'+
-      'En GitHub: Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token. '+
-      'En "Repository access" elige sólo <b>'+esc(GH_OWNER+'/'+GH_REPO)+'</b>, y en "Permissions" activa <b>Contents: Read and write</b>. Copia el token generado y pégalo aquí.</div>'+
-      '</div>'+
 
       '<div class="upd-status" id="upd-status"></div>'+
       '<div class="upd-actions">'+
@@ -2463,8 +2388,6 @@ let DATA = /*DATA_START*/{"kpis": {"total_requerimientos": 484, "total_solicitud
     var fileGar = document.getElementById('upd-file-gar');
     var btnProcess = document.getElementById('upd-btn-process');
     var statusEl = document.getElementById('upd-status');
-    var tokenHelp = document.getElementById('upd-token-help');
-    var tokenHelpBox = document.getElementById('upd-token-help-box');
 
     function setStatus(msg, cls){
       statusEl.textContent = msg || '';
@@ -2496,20 +2419,11 @@ let DATA = /*DATA_START*/{"kpis": {"total_requerimientos": 484, "total_solicitud
       document.getElementById('upd-fname-gar').textContent = f.name;
     });
 
-    tokenHelp.addEventListener('click', function(e){
-      e.preventDefault();
-      tokenHelpBox.style.display = tokenHelpBox.style.display==='none' ? 'block' : 'none';
-    });
-
     ui.overlay.querySelectorAll('[data-act="close"]').forEach(function(el){
       el.addEventListener('click', closeModal);
     });
 
     btnProcess.addEventListener('click', function(){
-      var token = document.getElementById('upd-token').value.trim();
-      if(!token){ setStatus('Ingresa el token de GitHub para poder publicar (aunque sólo quieras previsualizar, lo necesitaremos al final).', 'err'); return; }
-      try{ localStorage.setItem(LS_TOKEN_KEY, token); }catch(e){}
-      wizState.token = token;
       setStatus('Leyendo archivos…');
       btnProcess.disabled = true;
 
@@ -2760,8 +2674,8 @@ let DATA = /*DATA_START*/{"kpis": {"total_requerimientos": 484, "total_solicitud
       var next = wizState.computed || computeCurrentDataset();
       var btn = document.getElementById('upd-btn-publish');
       btn.disabled = true;
-      setStatus('Publicando en GitHub…');
-      publishToGithub(wizState.token, next).then(function(){
+      setStatus('Publicando…');
+      publishViaWorker(next).then(function(){
         setStatus('Publicado. El sitio puede tardar uno o dos minutos en reflejar el cambio.', 'ok');
         try{ window.__postventaSetData(JSON.parse(JSON.stringify(next))); }catch(e){}
         setTimeout(closeModal, 2500);
